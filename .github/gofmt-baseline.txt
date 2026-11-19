@@ -1,0 +1,10 @@
+# Files that were not gofmt-clean upstream when Parvin was forked.
+# Remove a line after formatting that file; never add new lines.
+logger/logger.go
+sub/subService_mtproto_test.go
+web/service/account_membership_test.go
+web/service/awg_support_test.go
+web/service/panelupload.go
+web/service/server.go
+web/service/wgc.go
+web/service/wgxray.go

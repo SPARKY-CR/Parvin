@@ -33,18 +33,21 @@ jobs:
       - name: Build
         run: CGO_ENABLED=1 go build ./...
 
+      # Files listed in .github/gofmt-baseline.txt were already unformatted upstream.
+      # Any other unformatted file fails the build.
       - name: Formatting
-        continue-on-error: true
         run: |
-          unformatted="$(gofmt -l . | grep -v '^third_party/' || true)"
-          if [ -n "$unformatted" ]; then
-            echo "Files need gofmt:"
-            echo "$unformatted"
+          export LC_ALL=C
+          { gofmt -l . | grep -v '^third_party/' || true; } | sort > gofmt-now.txt
+          { grep -v '^#' .github/gofmt-baseline.txt || true; } | sort > gofmt-baseline.txt
+          new="$(comm -13 gofmt-baseline.txt gofmt-now.txt)"
+          if [ -n "$new" ]; then
+            echo "Files need gofmt (not in the baseline):"
+            echo "$new"
             exit 1
           fi
 
       - name: Vet
-        continue-on-error: true
         run: go vet ./...
 
       - name: Unit tests
