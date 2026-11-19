@@ -1,0 +1,111 @@
+# Full release build: Xray core + geo data + static VPN daemon bundle + panel binary.
+# Slow on a cold cache (the daemon bundle is built in Docker); later runs reuse caches.
+# Manual run: Actions tab -> Build -> Run workflow.
+# Tag run: pushing a tag like v0.1.0 also publishes a GitHub Release.
+name: Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      geo_lean:
+        description: "Embed only geoip.dat and geosite.dat (much smaller binary)"
+        type: boolean
+        default: true
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    env:
+      GEO_LEAN: ${{ github.event_name == 'workflow_dispatch' && inputs.geo_lean == false && '0' || '1' }}
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup || true
+          df -h /
+
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Pin submodule revisions for cache keys
+        id: pins
+        run: |
+          echo "xray=$(git ls-tree HEAD third_party/Xray-core | awk '{print $3}')" >> "$GITHUB_OUTPUT"
+          echo "telemt=$(git ls-tree HEAD third_party/telemt | awk '{print $3}')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache static VPN daemon bundle
+        uses: actions/cache@v4
+        with:
+          path: backend/bin
+          key: bundle-${{ matrix.arch }}-${{ hashFiles('build/backend/**') }}-${{ steps.pins.outputs.telemt }}
+          restore-keys: bundle-${{ matrix.arch }}-
+
+      - name: Cache Xray core and geo data
+        uses: actions/cache@v4
+        with:
+          path: corebundle/core
+          key: core-${{ matrix.arch }}-${{ env.GEO_LEAN }}-${{ steps.pins.outputs.xray }}-${{ hashFiles('build/core/**') }}
+          restore-keys: core-${{ matrix.arch }}-${{ env.GEO_LEAN }}-
+
+      - name: Build panel binary
+        run: ./build.sh --skip-submodules --no-color --arch "${{ matrix.arch }}"
+
+      - name: Checksum
+        working-directory: build/out
+        run: sha256sum "vpn-ui-${{ matrix.arch }}" | tee "vpn-ui-${{ matrix.arch }}.sha256"
+
+      - name: Smoke test (version flag)
+        continue-on-error: true
+        run: |
+          chmod +x "build/out/vpn-ui-${{ matrix.arch }}"
+          "build/out/vpn-ui-${{ matrix.arch }}" -v
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vpn-ui-${{ matrix.arch }}
+          path: |
+            build/out/vpn-ui-${{ matrix.arch }}
+            build/out/vpn-ui-${{ matrix.arch }}.sha256
+          retention-days: 14
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: vpn-ui-*
+          merge-multiple: true
+          path: dist
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes

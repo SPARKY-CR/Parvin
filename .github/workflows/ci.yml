@@ -1,0 +1,63 @@
+# Fast checks on every push and pull request.
+# Baseline mode: the build step is blocking; gofmt, vet and tests only report.
+# After the first green run, remove "continue-on-error" from the steps you want enforced.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The embedded core and daemon bundles are optional at compile time
+      # (go:embed all:...), so a plain checkout compiles without them.
+      - name: Build
+        run: CGO_ENABLED=1 go build ./...
+
+      - name: Formatting
+        continue-on-error: true
+        run: |
+          unformatted="$(gofmt -l . | grep -v '^third_party/' || true)"
+          if [ -n "$unformatted" ]; then
+            echo "Files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        continue-on-error: true
+        run: go vet ./...
+
+      - name: Unit tests
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          go test ./... -count=1 -timeout 15m 2>&1 | tee test.log
+
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-test-log
+          path: test.log
+          if-no-files-found: ignore
+          retention-days: 7
